@@ -1,0 +1,29 @@
+{
+    "author": "MotherWit",
+    "dependencies": {},
+    "keywords": [],
+    "name": "5-10-15",
+    "pebble": {
+        "capabilities": [
+            "configurable"
+        ],
+        "displayName": "5/10/15",
+        "enableMultiJS": true,
+        "messageKeys": [
+            "LIBRARY_DATA"
+        ],
+        "projectType": "native",
+        "resources": {
+            "media": []
+        },
+        "sdkVersion": "3",
+        "targetPlatforms": [
+            "emery"
+        ],
+        "uuid": "57c31910-2e45-4b67-9edd-f1a5b0fa5d4d",
+        "watchapp": {
+            "watchface": false
+        }
+    },
+    "version": "1.3.0"
+}
