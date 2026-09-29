@@ -20,6 +20,11 @@
 //     to freeze time; it cancels the pending wakeup.
 //
 // Keeps v1.2's per-list persistence fix.
+//
+// v1.4: "then run" list chaining. A non-looping list can name a
+//   list to start when it finishes (stored as then_run). Works
+//   foreground and through wakeup/resync. No schema bump: the
+//   then_run byte is appended trailing, absent in old saves.
 // ============================================================
 
 // ============================================================
@@ -98,7 +103,7 @@ typedef struct {
   uint8_t task_count;
   uint8_t protected_flag;
   uint8_t loops;
-  uint8_t reserved;
+  uint8_t then_run;   // 0 = none, else target list index + 1
   Task    tasks[MAX_TASKS];
 } TaskList;
 
@@ -173,7 +178,7 @@ static void set_list(uint8_t li, const char *name, uint8_t protected_flag, uint8
   l->task_count = 0;
   l->protected_flag = protected_flag;
   l->loops = loops;
-  l->reserved = 0;
+  l->then_run = 0;
 }
 
 static void add_task(uint8_t li, const char *name, uint32_t duration_sec, uint8_t color) {
@@ -258,6 +263,8 @@ static void save_one_list(uint8_t idx, const TaskList *l) {
     buf[p++] = t->color;
   }
 
+  buf[p++] = l->then_run;   // trailing: chain target (0 = none)
+
   persist_write_data(PERSIST_KEY_LIST_BASE + idx, buf, p);
 }
 
@@ -283,7 +290,7 @@ static bool load_one_list(uint8_t idx, TaskList *l) {
   l->task_count = buf[p++];
   if (l->task_count > MAX_TASKS) l->task_count = MAX_TASKS;
   l->protected_flag = 0;
-  l->reserved = 0;
+  l->then_run = 0;
 
   for (uint8_t i = 0; i < l->task_count; i++) {
     Task *t = &l->tasks[i];
@@ -301,6 +308,12 @@ static bool load_one_list(uint8_t idx, TaskList *l) {
     if (color >= PALETTE_SIZE) color = 0;
     t->duration = (uint32_t)minutes * 60;
     t->color = color;
+  }
+
+  // then_run: optional trailing byte (absent in pre-chaining saves)
+  if (p < n) {
+    l->then_run = buf[p++];
+    if (l->then_run > MAX_LISTS) l->then_run = 0;
   }
 
   return true;
@@ -596,22 +609,39 @@ static void exit_done_state(void) {
 // ============================================================
 // ADVANCE (foreground tick reaching zero)
 // ============================================================
+// Returns the list to jump to when the active list finishes, or -1.
+static int chain_target(void) {
+  uint8_t t = active()->then_run;
+  if (t == 0) return -1;
+  uint8_t idx = t - 1;
+  if (idx >= s_library.list_count) return -1;
+  if (idx == s_active_list) return -1;
+  if (s_library.lists[idx].task_count == 0) return -1;
+  return idx;
+}
+
 static void advance_task(void) {
   uint8_t next = s_current_task + 1;
   if (next >= active()->task_count) {
     if (active()->loops) {
       next = 0;
-      s_current_task = next;
-      s_task_anchor = time(NULL);
-      s_remaining = current_task()->duration;
-      load_current_task_display();
-      vibe_advance();
-      schedule_wakeup_for_remaining();
-      touch_activity();
-      save_state();
     } else {
-      enter_done_state();
+      int chain = chain_target();
+      if (chain < 0) {
+        enter_done_state();
+        return;
+      }
+      s_active_list = (uint8_t)chain;   // "then run": jump to next list
+      next = 0;
     }
+    s_current_task = next;
+    s_task_anchor = time(NULL);
+    s_remaining = current_task()->duration;
+    load_current_task_display();
+    vibe_advance();
+    schedule_wakeup_for_remaining();
+    touch_activity();
+    save_state();
     return;
   }
   s_current_task = next;
@@ -673,8 +703,13 @@ static void resync_running_state(void) {
       if (active()->loops) {
         next = 0;
       } else {
-        enter_done_state();
-        return;
+        int chain = chain_target();
+        if (chain < 0) {
+          enter_done_state();
+          return;
+        }
+        s_active_list = (uint8_t)chain;   // "then run": jump to next list
+        next = 0;
       }
     }
     s_current_task = next;
@@ -1002,7 +1037,7 @@ static void parse_task(const char *p, const char *end, Task *t) {
 
 static void parse_list(const char *p, const char *end, TaskList *l) {
   l->protected_flag = 0;
-  l->reserved = 0;
+  l->then_run = 0;
   l->task_count = 0;
 
   const char *d = find_delim(p, end, '|');
@@ -1021,14 +1056,26 @@ static void parse_list(const char *p, const char *end, TaskList *l) {
   p = d + 1;
 
   uint8_t count = 0;
-  while (p < end && count < MAX_TASKS && count < declared) {
+  uint32_t seen = 0;
+  while (p < end && seen < declared) {
     const char *tdelim = find_delim(p, end, '|');
-    parse_task(p, tdelim, &l->tasks[count]);
-    count++;
-    if (tdelim >= end) break;
+    if (count < MAX_TASKS) {
+      parse_task(p, tdelim, &l->tasks[count]);
+      count++;
+    }
+    seen++;
+    if (tdelim >= end) { p = end; break; }
     p = tdelim + 1;
   }
   l->task_count = count;
+
+  // Optional trailing field: then_run (0 = none, else list index + 1).
+  // Absent in older phone-side builds.
+  if (p < end) {
+    const char *d2 = find_delim(p, end, '|');
+    uint32_t tr = parse_uint(p, d2 - p);
+    l->then_run = (tr <= MAX_LISTS) ? (uint8_t)tr : 0;
+  }
 }
 
 static char s_prev_active_name[MAX_LIST_NAME];

@@ -31,9 +31,11 @@ Pebble.addEventListener('showConfiguration', function() {
 // Wire format (single string):
 //   listCount ~ list1 ~ list2 ~ ...
 // each list:
-//   name | loops(0/1) | taskCount | t1 | t2 | ...
+//   name | loops(0/1) | taskCount | t1 | t2 | ... | thenRun
 // each task:
 //   name ^ minutes ^ colorIndex
+// thenRun: 0 = none, else target list index + 1. Trailing field,
+// so older watch builds simply ignore it.
 // ------------------------------------------------------------
 Pebble.addEventListener('webviewclosed', function(e) {
   if (!e || !e.response) {
@@ -63,6 +65,15 @@ function flattenLibrary(library) {
   var listCount = library.length;
   var parts = [String(listCount)];
 
+  // Chains are stored by list name in the config page (survives
+  // reordering); resolve to an index here. First match wins.
+  var nameToIndex = {};
+  for (var k = 0; k < library.length; k++) {
+    if (!nameToIndex.hasOwnProperty(library[k].name)) {
+      nameToIndex[library[k].name] = k;
+    }
+  }
+
   for (var i = 0; i < library.length; i++) {
     var l = library[i];
     var taskCount = l.tasks.length;
@@ -76,6 +87,12 @@ function flattenLibrary(library) {
       var taskStr = sanitize(t.name) + '^' + String(t.minutes) + '^' + String(t.color);
       listFields.push(taskStr);
     }
+    var thenRun = 0;
+    if (!l.loops && l.thenRun && nameToIndex.hasOwnProperty(l.thenRun)) {
+      var target = nameToIndex[l.thenRun];
+      if (target !== i) thenRun = target + 1;
+    }
+    listFields.push(String(thenRun));
     parts.push(listFields.join('|'));
   }
 
