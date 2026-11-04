@@ -775,7 +775,13 @@ static void picker_draw_row(GContext *ctx, const Layer *cell_layer,
 }
 
 static int16_t picker_cell_height(MenuLayer *m, MenuIndex *idx, void *ctx) {
-  return 44;
+  // menu_cell_basic_draw centers title+subtitle with
+  // (cell_h - title_h - subtitle_h - 10) / 2. On emery the basic cell is
+  // taller than 44, so a hardcoded 44 makes that margin negative and draws
+  // the title above the cell. Row 0 then loses the name off the top of the
+  // screen; the subtitle, one title-height lower, still shows. Later rows
+  // keep the name only because that overflow is still on screen.
+  return menu_cell_basic_cell_height();
 }
 
 static void picker_select_click(MenuLayer *m, MenuIndex *idx, void *ctx) {
