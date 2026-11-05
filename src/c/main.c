@@ -25,6 +25,10 @@
 //   list to start when it finishes (stored as then_run). Works
 //   foreground and through wakeup/resync. No schema bump: the
 //   then_run byte is appended trailing, absent in old saves.
+//
+// Content size: menu rows follow Settings > Notifications > Text Size
+//   via preferred_content_size(), checked once in init. Emery maps
+//   Small→Medium, Medium→Large, Large→ExtraLarge.
 // ============================================================
 
 // ============================================================
@@ -756,6 +760,142 @@ static void activate_list(uint8_t idx) {
 }
 
 // ============================================================
+// CONTENT SIZE  (Settings > Notifications > Text Size)
+//
+// Read once in init; the OS does not change it while we run.
+// Fonts and the designed row height are the system menu-cell
+// stylesheet (PebbleOS system_theme_style): Gothic title, Gothic
+// subtitle, and the third-party app basic cell height.
+//
+// menu_cell_basic_draw on a third-party app ignores the user's
+// text size and stays on the platform default. On emery that is
+// Large, title Gothic 24 Bold + subtitle Gothic 24, cell ~61px.
+// It vertically centers (title + subtitle + 10). A shorter row
+// makes that margin negative, so the title is drawn above the
+// cell. Row 0 then loses its name off the top of the screen and
+// only the subtitle remains.
+//
+// Large (emery Text Size Medium, the platform default) keeps
+// menu_cell_basic_draw and a row at least menu_cell_basic_cell_height()
+// tall. Every other size is drawn with the Gothic pair for that
+// size, in a row at least title + subtitle + 10px tall.
+// ============================================================
+static PreferredContentSize s_content_size = PreferredContentSizeLarge;
+static GFont s_menu_title_font;
+static GFont s_menu_subtitle_font;
+static int16_t s_menu_title_px = 24;
+static int16_t s_menu_subtitle_px = 24;
+static int16_t s_menu_cell_height = 61;
+static int16_t s_menu_inset = 10;
+
+static void init_content_size(void) {
+  s_content_size = preferred_content_size();
+
+  // Defaults are Large: emery's platform default, and the pair
+  // menu_cell_basic_draw actually paints.
+  const char *title_key = FONT_KEY_GOTHIC_24_BOLD;
+  const char *subtitle_key = FONT_KEY_GOTHIC_24;
+  int16_t title_px = 24;
+  int16_t subtitle_px = 24;
+  int16_t designed = 61;
+  int16_t inset = 10;
+
+  switch (s_content_size) {
+    case PreferredContentSizeSmall:
+      // Emery does not report Small. Kept so the map is complete.
+      title_key = FONT_KEY_GOTHIC_18_BOLD;
+      subtitle_key = FONT_KEY_GOTHIC_18;
+      title_px = 18;
+      subtitle_px = 18;
+      designed = 44;
+      inset = 5;
+      break;
+    case PreferredContentSizeMedium:
+      // Emery Text Size Small.
+      title_key = FONT_KEY_GOTHIC_24_BOLD;
+      subtitle_key = FONT_KEY_GOTHIC_18;
+      title_px = 24;
+      subtitle_px = 18;
+      designed = 44;
+      inset = 5;
+      break;
+    case PreferredContentSizeLarge:
+      // Emery Text Size Medium. System basic cell is ~61px.
+      title_key = FONT_KEY_GOTHIC_24_BOLD;
+      subtitle_key = FONT_KEY_GOTHIC_24;
+      title_px = 24;
+      subtitle_px = 24;
+      designed = 61;
+      inset = 10;
+      break;
+    case PreferredContentSizeExtraLarge:
+    default:
+      // Emery Text Size Large.
+      title_key = FONT_KEY_GOTHIC_28_BOLD;
+      subtitle_key = FONT_KEY_GOTHIC_28;
+      title_px = 28;
+      subtitle_px = 28;
+      designed = 85;
+      inset = 10;
+      break;
+  }
+
+  s_menu_title_font = fonts_get_system_font(title_key);
+  s_menu_subtitle_font = fonts_get_system_font(subtitle_key);
+  s_menu_title_px = title_px;
+  s_menu_subtitle_px = subtitle_px;
+  s_menu_inset = inset;
+
+  // Pixel heights are the Gothic PBF max_height (fonts_get_font_height).
+  int16_t height = title_px + subtitle_px + 10;
+  if (designed > height) height = designed;
+
+  if (s_content_size == PreferredContentSizeLarge ||
+      s_content_size == PreferredContentSizeExtraLarge) {
+    int16_t basic = menu_cell_basic_cell_height();
+    if (basic > height) height = basic;
+  }
+  s_menu_cell_height = height;
+}
+
+// Title+subtitle row. y is clamped to the cell so row 0 cannot
+// draw its title above the screen even if a height is short.
+static void menu_draw_title_subtitle(GContext *ctx, const Layer *cell_layer,
+                                     const char *title, const char *subtitle) {
+  GRect bounds = layer_get_bounds(cell_layer);
+  int16_t sub_px = (subtitle && subtitle[0]) ? s_menu_subtitle_px : 0;
+  int16_t full = s_menu_title_px + sub_px + 10;
+  int16_t y = (bounds.size.h - full) / 2;
+  if (y < 0) y = 0;
+
+  int16_t text_w = bounds.size.w - s_menu_inset;
+  if (text_w < 0) text_w = 0;
+
+  if (title && title[0]) {
+    int16_t box_h = s_menu_title_px + 4;
+    int16_t room = bounds.size.h - y;
+    if (box_h > room) box_h = room;
+    if (box_h > 0) {
+      graphics_draw_text(ctx, title, s_menu_title_font,
+                         GRect(s_menu_inset, y, text_w, box_h),
+                         GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    }
+  }
+
+  if (sub_px > 0) {
+    int16_t sy = y + s_menu_title_px;
+    int16_t box_h = s_menu_subtitle_px + 4;
+    int16_t room = bounds.size.h - sy;
+    if (box_h > room) box_h = room;
+    if (box_h > 0) {
+      graphics_draw_text(ctx, subtitle, s_menu_subtitle_font,
+                         GRect(s_menu_inset, sy, text_w, box_h),
+                         GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    }
+  }
+}
+
+// ============================================================
 // PICKER
 // ============================================================
 static uint16_t picker_num_rows(MenuLayer *m, uint16_t section, void *ctx) {
@@ -771,11 +911,20 @@ static void picker_draw_row(GContext *ctx, const Layer *cell_layer,
   const char *loop_marker = l->loops ? " >" : "";
   snprintf(subtitle, sizeof(subtitle), "%d tasks, %lu min%s",
            (int)l->task_count, total_sec / 60, loop_marker);
-  menu_cell_basic_draw(ctx, cell_layer, l->name, subtitle, NULL);
+  // Large matches the fonts menu_cell_basic_draw is locked to on emery.
+  if (s_content_size == PreferredContentSizeLarge) {
+    menu_cell_basic_draw(ctx, cell_layer, l->name, subtitle, NULL);
+  } else {
+    menu_draw_title_subtitle(ctx, cell_layer, l->name, subtitle);
+  }
 }
 
 static int16_t picker_cell_height(MenuLayer *m, MenuIndex *idx, void *ctx) {
-  return 44;
+  if (s_content_size == PreferredContentSizeLarge) {
+    int16_t basic = menu_cell_basic_cell_height();
+    if (basic > s_menu_cell_height) return basic;
+  }
+  return s_menu_cell_height;
 }
 
 static void picker_select_click(MenuLayer *m, MenuIndex *idx, void *ctx) {
@@ -1170,6 +1319,7 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
 // APP INIT
 // ============================================================
 static void init(void) {
+  init_content_size();
   load_all();
 
   // Clear any wakeup left over from before this launch; the flow
